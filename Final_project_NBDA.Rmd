@@ -1,0 +1,1092 @@
+---
+title: "NetBase_final"
+author: "Alessandro Pilli"
+date: "2023-04-20"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Obtaining data and partitioning the two experiments
+```{r WD}
+setwd("C:/Users/alepi/OneDrive/Desktop/university/first year/second semester/advanced data analysis/Network based data analysis")
+
+```
+```{r, pakages}
+library(GEOquery)
+library(dplyr)
+library(rgl)
+library(useful)
+library(plotly)
+library(rlang)
+library(ggplot2)
+library(ggrepel)
+library(genefilter)
+library(MASS)
+library(pROC)
+library(caret)
+library(glmnet)
+library(igraph)
+library(rScudo)
+library(RCy3)
+library(stringr)
+library(randomForest)
+library(lmerTest)
+library(ROCR)
+library(gprofiler2) 
+library(biomaRt)
+library(KEGGREST)
+library(KEGGgraph)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(pathfindR)
+```
+```{r, obtaining the data and first boxplot}
+gse<- getGEO("GSE166502") # mRNA expression data throughout human muscle cell differentiation in n=13 individuals with type 2 diabetes and n=13 controls
+gse1 <- gse[[1]]
+
+assay <- gse1@assayData
+
+totex <- assay$exprs
+boxplot(totex)
+
+totex <- data.frame(totex)
+sum(is.na(totex))
+# colSums(is.na(totex)) # 52 na
+# ex <- exprs(gse1) #not working don't know why?
+# dim(ex)
+```
+# obtaining the gene names for later analysis
+```{r obtaining gene names}
+# d <- gse[["GSE166502_series_matrix.txt.gz"]]@featureData@data[["Entrez_Gene_ID"]]
+# ensembl <- useEnsembl(biomart = "ensembl",dataset = "hsapiens_gene_ensembl")
+# 
+# query <- getBM(attributes = c("gene_biotype", "external_gene_name"),
+#                filters = c("entrezgene_id"),
+#                values = list(c(d)),
+#                mart = ensembl)
+
+# La prima parte ho cercato i nomi con Entrezgene id ,
+#ma me ne torna meno cosa che è normale perchè un po si ripetono e alcuni non li troverà perchè sono strani.
+# Quindi meglio usare ciò che ti dan loro seconde me.
+
+# A sto punto io mi terrei i dati cosi e mi farei un altro data frame che mi permetta 
+# di cambiare o trovare i nomi se voglio. Quindi metto indice sequenziale sui geni
+# e aggiungo al data frame l'indice e  i nomi che ti danno loro, più i sinonimi per completezza.
+
+d <- 1:nrow(totex)
+vec <- c()
+for (i in (1:length(d))){
+  vec <- append(vec, unlist(str_split(gse[["GSE166502_series_matrix.txt.gz"]]@featureData@data[["Synonyms"]][i], ";"))[1])
+  if(vec[i]== ""){
+    vec[i] <- "No_Synonym"
+  }
+}
+
+to_switch <- data.frame(Index = d, Gene_names = gse[["GSE166502_series_matrix.txt.gz"]]@featureData@data[["Symbol"]], Synonym = vec
+)
+rownames(totex) <- d
+
+# La tua chiave così è il nome delle righe.
+```
+
+```{r removing the Na line}
+clear.data <-  totex[complete.cases(totex),] # removing the line that contain only Na
+clear.data <- data.frame(clear.data)
+
+# nrow(totex) # 17011
+# nrow(clear.data) # 17010
+
+#logtotex <- log2(totex)
+#dim(logtotex)
+#boxplot(logtotex)
+
+sca <- data.frame(scale(clear.data))
+boxplot(sca)
+
+pheno <- pData(gse1)
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, PCA of all data}
+pca <- prcomp(t(sca))  # transpose the argument columns become rows and vicerversa
+summary(pca)
+screeplot(pca)
+plot(pca, type = "l")
+
+grpcol <- c(rep("#0066CC",13), rep("#FF0099",13), rep("red",13), rep("limegreen",13))
+
+plot(pca$x[,1], pca$x[,2], xlab="PCA1", ylab="PCA2",
+     main="PCA for components 1&2", type="p", pch=10, col=grpcol)
+
+# text(pca$x[,1], pca$x[,4], rownames(pca$x), cex=0.75)
+
+# scores <- as.data.frame(pca$x)
+# plot_ly(scores, x = ~PC1, y = ~PC2, color = pheno$geo_accession, colors = grpcol, type = 'scatter', mode = 'markers')
+# 
+# fig <- plot_ly(scores, x = ~PC1, y = ~PC2, z = ~PC3, color = pheno$geo_accession, colors = grpcol ) %>%
+#   add_markers(size = 50)
+# 
+# 
+# fig <- fig %>%
+#   layout(
+#     title = "WHAT CAN I SEE?",
+#     scene = list(bgcolor = "#e5ecf6")
+# )
+# 
+# fig
+
+```
+
+```{r, creating the two dataframes}
+T2Dmyoblast <- c()
+T2Dmyotube <- c()
+
+NGTmyoblast <- c()
+NGTmyotube <- c()
+
+for (x in 1:52) {
+  if (pheno$source_name_ch1[x] == "Myoblast, NGT") { 
+    NGTmyoblast <- append(NGTmyoblast, pheno$geo_accession[x])
+  } else if (pheno$source_name_ch1[x] == "Myotube, NGT") { 
+    NGTmyotube <- append(NGTmyotube, pheno$geo_accession[x])
+  } else if (pheno$source_name_ch1[x] == "Myoblast, T2D") { 
+    T2Dmyoblast <- append(T2Dmyoblast, pheno$geo_accession[x])
+  } else if (pheno$source_name_ch1[x] == "Myotube, T2D") { 
+    T2Dmyotube <- append(T2Dmyotube, pheno$geo_accession[x])
+  } 
+}
+
+myoblast <- c(T2Dmyoblast, NGTmyoblast)
+
+myotube <- c(T2Dmyotube, NGTmyotube)
+
+myoblastdf <- data.frame(subset(sca, select = myoblast))
+
+myotubedf <-  data.frame(subset(sca, select= myotube))
+
+```
+# working first on the myoblast
+```{r pca of unfiltered data}
+names <- c(rep("T2D", 13), rep("NGT", 13)) #T2D = type 2 diabetes, NGT = normal glucose tolerant
+
+pca1 <- prcomp(t(myoblastdf))  # transpose the argument columns become rows and vicerversa
+summary(pca1)
+screeplot(pca1)
+plot(pca1, type = "l")
+
+grpcol <- c(rep("#0066CC",13), rep("#FF0099",13))
+
+plot(pca1$x[,1], pca1$x[,2], xlab="PCA1", ylab="PCA2", main="PCA for components 1&2", type="p", pch=20, col=grpcol)
+text(pca1$x[,1], pca1$x[,2], names, cex=0.75)
+```
+
+```{r, cleaning data}
+f <-  factor(c(rep(0,13), rep(1,13)))
+res <- rowttests(as.matrix(myoblastdf),f)
+# myoblastdf <- myoblastdf[p.adjust(res$p.value) < 0.05,]
+myoblastdf <- myoblastdf[res$p.value < 0.05, ]
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, pca of cleaned data}
+names <- c(rep("T2D", 13), rep("NGT", 13)) #T2D = type 2 diabetes, NGT = normal glucose tolerant
+
+pca1 <- prcomp(t(myoblastdf))  # transpose the argument columns become rows and vicerversa
+summary(pca1)
+screeplot(pca1)
+plot(pca1, type = "l")
+
+grpcol <- c(rep("#0066CC",13), rep("#FF0099",13))
+
+plot(pca1$x[,1], pca1$x[,2], xlab="PCA1", ylab="PCA2", main="PCA for components 1&2", type="p", pch=20, col=grpcol)
+text(pca1$x[,1], pca1$x[,2], names, cex=0.75)
+
+# scores <- as.data.frame(pca1$x)
+# plot_ly(scores, x = ~PC1, y = ~PC2, color = myoblast, colors = grpcol, type = 'scatter', mode = 'markers')
+# 
+# fig <- plot_ly(scores, x = ~PC1, y = ~PC2, z = ~PC3, color = myoblast, colors = grpcol ) %>%
+#   add_markers(size = 50)
+# 
+# 
+# fig <- fig %>%
+#   layout(
+#     title = "WHAT CAN I SEE?",
+#     scene = list(bgcolor = "#e5ecf6")
+# )
+# 
+# fig
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, kmeans}
+k <- 2
+
+kmean_res <- kmeans(t(myoblastdf),k)
+table(kmean_res$cluster)
+plot(kmean_res, data = t(myoblastdf)) + geom_text(aes(label = names), hjust = 0, vjust = 0)
+
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, clustering}
+k1 <- 2
+
+matrix <- dist(t(myoblastdf))
+results <- hclust(matrix, method = "ave")
+
+c_groups <- cutree(results, k=k1)
+table(c_groups)
+plot(results, hang = 1, labels = names)
+rect.hclust(results, k= 2, border = c("red", "blue"))
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, random forest}
+
+set.seed(1) 
+
+## Genefilterpackage is very useful to preprocess data 
+## here we remove genes whose value is not > 0 in at least 20% of the samples 
+## filter genes on raw scale, then return to log scale
+# ffun<-filterfun(pOverA(0.20,0.0))
+# t.fil<-genefilter(myoblastdf,ffun) 
+# small.ese  t <- log2(myoblastdf[t.fil,]) 
+# small.eset <- small.eset[complete.cases(small.eset),]
+# # Alternative simpler method if you don’t need the complexity of genefilter 
+# # small.eset<-log2(na.omit(myoblastdf))
+# # small.eset <-  small.eset[complete.cases(small.eset),]
+# # dim(small.eset) 
+# # 12625 genes, 30 arrays (15 B and 15 T) 
+# 
+# # build RF 
+# rf1 <-randomForest(x=t(small.eset), 
+#                   y=as.factor(names),
+#                   ntree=1000) 
+#  
+# predict(rf1, t(small.eset)) 
+# # graph of sorted importance values 
+# plot(sort(rf1$importance, decreasing=TRUE))    
+# # can also use: 
+# varImpPlot(rf1) 
+# #extract the most 'important' genes 
+# probe.names1 <-rownames(rf1$importance) 
+# top100 <-probe.names1[order(rf1$importance, decreasing=TRUE)[1:100]] 
+# # write.csv(top200, file = "probes-top200.txt", quote=FALSE, row.names= FALSE, col.names=FALSE)
+# plot(rf1)
+
+#-----------------------------------------------------------------
+rf <-randomForest(x=t(myoblastdf), 
+                  y=as.factor(names),
+                  ntree=1000) 
+
+predict(rf, t(myoblastdf)) 
+# graph of sorted importance values 
+plot(sort(rf$importance, decreasing=TRUE))    
+# can also use: 
+varImpPlot(rf) 
+#extract the most 'important' genes 
+probe.names_1 <-rownames(rf$importance) 
+# top_200 <-probe.names_1[order(rf$importance, decreasing=TRUE)[1:200]] 
+# write.csv(top_200, file = "probes-top200.txt", quote=FALSE, row.names= FALSE, col.names = FALSE)
+plot(rf)
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, linear discriminant analysis LDA (SKIPPABLE)}
+
+# Actual code first 8 lines
+# dat <- cbind(as.data.frame(t(myoblastdf)), factor(c(rep(0,13), rep(1,13))))
+# colnames(dat)[ncol(dat)] <- "AFFECTED"
+# metric <- "Accuracy"
+# 
+# Run algorithms using 10-fold cross validation, 10 times (done later so not needed here)
+# 
+# control <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+# fit.lda.2 <- train(AFFECTED~., data=dat, method="lda", metric=metric, trControl=control)
+# fit.rf.2 <- train(AFFECTED~., data=dat, method="rf", metric=metric, trControl=control)
+# 
+# results <- resamples(list(LDA=fit.lda.2, RF=fit.rf.2))
+# ggplot(results) + labs(y = "Accuracy")
+
+
+
+# # crude substetting
+# n.controls <- 13
+# n.effected <- 13
+# 
+# train <- sample(1:(n.controls),(n.controls-5))
+# test <- setdiff(1:(n.effected), train)
+# 
+# test <- c(test, test+20)
+# train <- c(train, train+20)
+# 
+# 
+# mod <- lda(AFFECTED ~. , data=as.data.frame(d  at), prior = c(0.5,0.5), subset = train)
+# 
+# plot(mod)
+# 
+# mod.values <- predict(mod, as.data.frame(dat[train,]))
+# 
+# plot(mod.values$x[,1], ylab = c("LDA Axis"))
+# text(mod.values$x[,1], col = c(as.character.numeric(data[train,])+10))
+# 
+# preds <- predict(mod, as.data.frame(data[test,]))
+# preds$class
+# 
+# table(as.numeric(preds$class),
+#       as.numeric(dat[test, "AFFECTED"]) )
+# 
+# roc_lda <- plot.roc(as.numeric(preds$class),
+# 
+# as.numeric(dat[test, "AFFECTED"]) )
+
+## WHIT CARET (make the splitting in test and train more clean and precise)
+
+# 10 cross validation
+# control <- trainControl(method="cv", number=10)
+# 
+# fit.lda <- train(AFFECTED~., data=dat, method="lda", metric=metric, trControl=control)
+# fit.rf <- train(AFFECTED~., data=dat, method="rf", metric=metric, trControl=control)
+# 
+# results <- resamples(list(LDA=fit.lda, RF=fit.rf))
+# summary(results)
+# ggplot(results) + labs(y = "Accuracy")
+
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, linear regression ridge and lasso (skippable)}
+dat <- t(myoblastdf)
+y <- c(rep(0,13),rep(1,13))
+f <- factor(y, labels = c("T2D", 
+"NGT"))
+
+# IMPORTANT: the type of factor changes the 
+# way the function glmnet works:
+# - f with numerical values: regression mode
+# - f with categorical values: classification mode
+
+lasso_fit=glmnet(dat,y,standardize=FALSE,family="binomial", alpha = 1) # alpha = 1 --> lasso regression
+plot(lasso_fit, xvar = "lambda", label=TRUE)
+
+ridge_fit=glmnet(dat,y,standardize=FALSE,family="binomial", alpha = 0) # alpha = 0 --> ridge regression
+plot(ridge_fit, xvar = "lambda", label=TRUE)
+
+
+cfit=cv.glmnet(dat,y,standardize=FALSE,family="binomial")
+plot(cfit)
+coef(cfit, s=cfit$lambda.min)
+# # repeat analysis but by using train + test sample subsets (not working, why = ?)
+# n.controls<-13
+# n.affected<-13
+# 
+# train <- sample(1:(n.controls), (n.controls - 5))
+# test <- setdiff(1:(n.controls),train)
+# 
+# test<- c(test, (test[1:5]+ 20))
+# train <- c(train, (train[1:8]+ 20))
+# 
+# fit=glmnet(dat,y,standardize=FALSE,family="binomial")
+# plot(fit)
+# 
+# cfit=cv.glmnet(dat[train,],y[train],standardize=FALSE,family="binomial")
+# plot(cfit)
+# 
+# predict(fit,dat[test,], type="class", s= cfit$lambda.min)
+# # plot ROCR curve and compute Area Under the Curve (AUC)
+# pred2 <- predict(fit,dat[test,], type="response", s=cfit$lambda.min)
+# plot(performance(prediction(pred2, y[test]), 'tpr', 'fpr'))
+# auc.tmp <- performance(prediction(pred2, y[test]),"auc")
+# auc <- as-numeric(auc.tmp$y.values)
+
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, lasso with caret}
+set.seed(1)
+
+f <- factor(c(rep("T2D",13), rep("NGT",13)))
+
+dat <- cbind(as.data.frame(t(myoblastdf)),f)
+colnames(dat)[ncol(dat)] <- "AFFECTED"
+
+control <- trainControl(method="cv", number=10)
+metric <- "Accuracy"
+fit.lasso <- train(AFFECTED~., data=dat, method="glmnet", 
+                   family = "binomial",
+                   tuneGrid = expand.grid(alpha = 1, lambda = seq(0,1,by=0.05)),
+                   trControl = control,
+                   metric = metric)
+
+fit.ridge <- train(AFFECTED~., data=dat, method="glmnet", 
+                   family = "binomial",
+                   tuneGrid = expand.grid(alpha = 0, lambda = seq(0,1,by=0.05)),
+                   trControl = control,
+                   metric = metric)
+plot(fit.lasso) 
+# comparison with other classification methods
+fit.lda <- train(AFFECTED~., data=dat, method="lda",
+                 metric=metric, trControl=control)
+fit.rf <- train(AFFECTED~., data=dat, method="rf",
+                metric=metric, trControl=control)
+
+results <- resamples(list(RF=fit.rf, LDA=fit.lda, LASSO=fit.lasso, RIDGE=fit.ridge))
+summary(results)
+
+mean_LDA <- mean(results$values$`LDA~Accuracy`)
+mean_Lasso <- mean(results$values$`LASSO~Accuracy`)
+mean_Rf <- mean(results$values$`RF~Accuracy`)
+mean_Ridge <- mean(results$values$`RIDGE~Accuracy`)
+means1 <- c(mean_Lasso, mean_LDA, mean_Rf, mean_Ridge)
+means <- scales::percent(means1)
+ggplot(results) + labs(y = "Accuracy of the methods") + geom_text(y= means1, aes(label = means), hjust = 0.5, vjust = -0.5, color = "black", fontface = "bold")
+
+# now wit repeated cross validation
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+
+fit.lda.2 <- train(AFFECTED~., data=dat, method="lda",
+                   metric=metric, trControl=control)
+
+fit.rf.2 <- train(AFFECTED~., data=dat, method="rf", metric=metric,
+                  trControl=control)
+
+fit.lasso.2 <- train(AFFECTED~., data=dat, method="glmnet", 
+                   family = "binomial",
+                   tuneGrid = expand.grid(alpha = 1, lambda = seq(0,1,by=0.05)),
+                   trControl = control,
+                   metric = metric)
+
+fit.ridge.2 <- train(AFFECTED~., data=dat, method="glmnet", 
+                   family = "binomial",
+                   tuneGrid = expand.grid(alpha = 0, lambda = seq(0,1,by=0.05)),
+                   trControl = control,
+                   metric = metric)
+
+results <- resamples(list(LDA=fit.lda.2, RF=fit.rf.2, LASSO=fit.lasso.2, RIDGE = fit.ridge.2))
+
+
+mean_LDA <- mean(results$values$`LDA~Accuracy`)
+mean_Lasso <- mean(results$values$`LASSO~Accuracy`)
+mean_Rf <- mean(results$values$`RF~Accuracy`)
+mean_Ridge <- mean(results$values$`RIDGE~Accuracy`)
+means1 <- c(mean_Lasso, mean_LDA, mean_Rf, mean_Ridge)
+means <- scales::percent(means1)
+ggplot(results) + labs(y = "Accuracy of the methods") + geom_text(y= means1, aes(label = means), hjust = 0.5, vjust = -0.5, color = "black", fontface = "bold")
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, Scudo and Scudo + caret}
+set.seed(1)
+
+dat <- as.matrix(myoblastdf)
+y <- c(rep(0,13),rep(1,13))
+f <- factor(y, labels = c("T2D", 
+"NGT"))
+
+
+inTrain <- createDataPartition(f, list = FALSE)
+trainData <- dat[, inTrain]
+testData <- dat[, -inTrain]
+
+# analyze training set
+trainRes <- scudoTrain(trainData, groups = f[inTrain], nTop = 25, nBottom = 25, alpha = 0.05)
+# trainRes
+# # inspect signatures
+# upSignatures(trainRes)[1:5,1:5]
+# consensusUpSignatures(trainRes)[1:5, ]
+# # generate and plot map of training samples
+trainNet <- scudoNetwork(trainRes, N = 0.5)
+scudoPlot(trainNet, vertex.label = NA)
+# # perform validation using testing samples
+# testRes <- scudoTest(trainRes, testData, f[-inTrain],nTop = 25, nBottom = 25)
+# testNet <- scudoNetwork(testRes, N = 0.5)
+# scudoPlot(testNet, vertex.label = NA)
+# # identify clusters on map
+# testClust <- igraph::cluster_spinglass(testNet, spins = 2)
+# plot(testClust, testNet, vertex.label = NA)
+# # perform classification 
+# classRes <- scudoClassify(trainData, testData, N = 0.25, nTop = 12, nBottom = 12,trainGroups = f[inTrain], alpha = 0.5)
+# caret::confusionMatrix(classRes$predicted, f[-inTrain])
+
+# use caret to test a grid a values for nTop & nBottom
+# using cross validation
+model <- scudoModel(nTop = (2:6)*5, nBottom = (2:6)*5,N = 0.5)
+control <- caret::trainControl(method = "repeatedcv", number = 10, repeats = 10, summaryFunction = caret::multiClassSummary)
+
+fit.scudo.2 <- caret::train(x = t(trainData), y = f[inTrain], method = model, trControl = control)
+# plot map of testing samples using best nTop & nBottom
+# values
+testRes <- scudoTest(trainRes, testData, f[-inTrain],fit.scudo.2$bestTune$nTop, fit.scudo.2$bestTune$nBottom5)
+testNet <- scudoNetwork(testRes, N = 0.5)
+scudoPlot(testNet, vertex.label = NA)
+# perform classification of testing samples using best 
+# nTop & nBottom values
+classRes <- scudoClassify(dat[, inTrain], dat[, -inTrain], 0.5, fit.scudo.2$bestTune$nTop, fit.scudo.2$bestTune$nBottom, f[inTrain], alpha = 0.05)
+caret::confusionMatrix(classRes$predicted, f[-inTrain])
+
+
+# open a connection to the running Cytoscape application (it must be running) to visualize the net
+# scudoCytoscape(trainNet)
+# scudoCytoscape(testNet) 
+```
+
+```{r important values for ol the methods}
+# include in this list the first 200 genes that are considered important for the random forest classification
+
+# rf important genes for classification
+rf_importance <- varImp(fit.rf.2, scale=FALSE)
+t <- order(rf_importance$importance$Overall, decreasing = TRUE)
+rf_importance_list = c()
+for (i in 1:200){
+  rf_importance_list <- append(rf_importance_list, 
+                                  strsplit(rownames(rf_importance$importance)[t[i]], "`")[[1]][2])
+}
+
+# lda important genes for classification
+lda_importance <- varImp(fit.lda.2, scale=FALSE)
+t <- order(lda_importance$importance$T2D, decreasing = TRUE)
+lda_importance_list <- rownames(lda_importance$importance[t[1:200], ])
+
+# lasso important genes for classification
+lasso_importance <- varImp(fit.lasso.2, scale=FALSE)
+t <- order(lasso_importance$importance$Overall, decreasing = TRUE)
+# these motherfuckers using different notations i hate it
+lasso_importance_list <- c()
+for (i in 1:200){
+  lasso_importance_list <- append(lasso_importance_list, 
+                                  strsplit(rownames(lasso_importance$importance)[t[i]], "`")[[1]][2])
+}
+
+
+# ridge important genes for classification
+ridge_importance <- varImp(fit.ridge.2, scale=FALSE)
+t <- order(ridge_importance$importance$Overall, decreasing = TRUE)
+# these motherfuckers using different notations i hate it
+ridge_importance_list <- c()
+for (i in 1:200){
+  ridge_importance_list <- append(ridge_importance_list, 
+                                  strsplit(rownames(ridge_importance$importance)[t[i]], "`")[[1]][2])
+}
+
+```
+
+```{r obtaining specific gene names and p values for the following step}
+final_df <- t(data.frame(subset(t(myoblastdf), select = ridge_importance_list)))
+res <- rowttests(as.matrix(final_df))
+
+for (x in 1:200){
+  rownames(final_df)[x]<-sub(".", "", rownames(final_df)[x])
+}
+
+genes_nums <- c(as.integer(rownames(final_df)))
+all_genes_names <- c(to_switch$Gene_names)
+
+
+genes_names.1 <- all_genes_names[genes_nums]
+p_values <- c(res$p.value)
+
+my_data <- data.frame(genes_names.1, p_values)
+filtered_data <- my_data[my_data$genes_names != "", ] #2 rows removed
+```
+
+```{r, include the functional annotattion chart (from online tools DAVID or using the code below = gprofiler)}
+# see vignette at https://cran.r-project.org/web/packages/gprofiler2/vignettes/gprofiler2.html
+gostres <- gost(query = genes_names.1,
+                organism = "hsapiens", ordered_query = FALSE, 
+                multi_query = FALSE, significant = TRUE, exclude_iea = FALSE,
+                measure_underrepresentation = FALSE, evcodes = FALSE, 
+                user_threshold = 0.05, correction_method = "g_SCS", 
+                domain_scope = "annotated", custom_bg = NULL, 
+                numeric_ns = "", sources = NULL, as_short_link = FALSE)
+
+names(gostres)
+head(gostres$result)
+
+# visualize results using a Manhattan plot
+gostplot(gostres, capped = TRUE, interactive = TRUE)
+
+  # when ready, create publication quality (static) plot + table of interesting terms/pathways
+p <- gostplot(gostres, capped = TRUE, interactive = FALSE)
+publish_gostplot(p, highlight_terms = c("GO:0005515", "GO:0005737", "GO:0031090", "GO:0043603",  "GO:0043604", "GO:1901566", "GO:1901564"), 
+                 width = NA, height = NA, filename = NULL) #"TF:M09904_1"
+```
+
+```{r, pathfinder}
+# run_pathfindR
+pathfindR_results <- run_pathfindR(filtered_data, 
+                                   iterations = 5)
+pathfindR_cluster <- cluster_enriched_terms(pathfindR_results)
+term_gene_graph(pathfindR_results)
+
+up_myoblast <- pathfindR_cluster$Up_regulated
+down_myoblast <- pathfindR_cluster$Down_regulated
+
+# write(unique(up_myoblast), "up_blast.txt")
+# unique(up_myoblast)
+```
+
+```{r datailed visualization}
+#visualize_terms(pathfindR_results, hsa_KEGG = F)
+```
+# working on the myotube
+```{r pca of unfiltered data}
+names <- c(rep("T2D", 13), rep("NGT", 13)) #T2D = type 2 diabetes, NGT = normal glucose tolerant
+
+pca1 <- prcomp(t(myotubedf))  # transpose the argument columns become rows and vicerversa
+summary(pca1)
+screeplot(pca1)
+plot(pca1, type = "l")
+
+grpcol <- c(rep("#0066CC",13), rep("#FF0099",13))
+
+plot(pca1$x[,1], pca1$x[,2], xlab="PCA1", ylab="PCA2", main="PCA for components 1&2", type="p", pch=20, col=grpcol)
+text(pca1$x[,1], pca1$x[,2], names, cex=0.75)
+```
+
+```{r, cleaning data}
+f <-  factor(c(rep(0,13), rep(1,13)))
+res <- rowttests(as.matrix(myotubedf),f)
+
+myotubedf <- myotubedf[res$p.value < 0.055, ]
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, pca of cleaned data}
+names <- c(rep("T2D", 13), rep("NGT", 13)) #T2D = type 2 diabetes, NGT = normal glucose tolerant
+
+pca1 <- prcomp(t(myotubedf))  # transpose the argument columns become rows and vicerversa
+summary(pca1)
+screeplot(pca1)
+plot(pca1, type = "l")
+
+grpcol <- c(rep("#0066CC",13), rep("#FF0099",13))
+
+plot(pca1$x[,1], pca1$x[,2], xlab="PCA1", ylab="PCA2", main="PCA for components 1&2", type="p", pch=20, col=grpcol)
+text(pca1$x[,1], pca1$x[,2], names, cex=0.75)
+
+# scores <- as.data.frame(pca2$x)
+# plot_ly(scores, x = ~PC1, y = ~PC2, color = myotube, colors = grpcol, type = 'scatter', mode = 'markers')
+# 
+# fig <- plot_ly(scores, x = ~PC1, y = ~PC2, z = ~PC3, color = myotube, colors = grpcol ) %>%
+#   add_markers(size = 50)
+# 
+# 
+# fig <- fig %>%
+#   layout(
+#     title = "WHAT CAN I SEE?",
+#     scene = list(bgcolor = "#e5ecf6")
+# )
+# 
+# fig
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, kmeans}
+k <- 2
+
+kmean_res2 <- kmeans(t(myotubedf),k)
+table(kmean_res2$cluster)
+plot(kmean_res2, data = t(myotubedf)) + geom_text(aes(label = names), hjust = 0, vjust = 0)
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, clustering}
+k1 <- 2
+
+matrix2 <- dist(t(myotubedf))
+results2 <- hclust(matrix2, method = "ave")
+
+c_groups2 <- cutree(results2, k=k1)
+table(c_groups2)
+plot(results2, hang = 1, labels = names)
+rect.hclust(results2, k= 2, border = c("red", "blue"))
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, random forest}
+set.seed(1)
+# Genefilterpackage is very useful to preprocess data 
+# here we remove genes whose value is not > 0 in at least 20% of the samples 
+# filter genes on raw scale, then return to log scale
+# ffun<-filterfun(pOverA(0.20,0.0))
+# t.fil<-genefilter(myotubedf,ffun)
+# small.eset2 <- log2(myotubedf[t.fil,])
+# small.eset2 <- small.eset2[complete.cases(small.eset2),]
+# # Alternative simpler method if you don’t need the complexity of genefilter
+# # small.eset2<-log2(na.omit(myotubedf))
+# # small.eset2 <-  small.eset2[complete.cases(small.eset2),]
+# # dim(small.eset2)
+# # 12625 genes, 30 arrays (15 B and 15 T)
+# 
+# 
+# # build RF
+# set.seed(1234)
+# rf2 <-randomForest(x=t(small.eset2),
+#                   y=as.factor(names),
+#                   ntree=1000)
+# # a trivial test
+# predict(rf2, t(small.eset2))
+# # graph of sorted importance values
+# plot(sort(rf2$importance, decreasing=TRUE))
+# # can also use:
+# varImpPlot(rf2)
+# # extract the most 'important' genes
+# probe.names2<-rownames(rf2$importance)
+# top50 <-probe.names2[order(rf2$importance, decreasing=TRUE)[1:50]]
+# # write.csv(top200, file = "probes-top200.txt", quote=FALSE, row.names= FALSE, col.names=FALSE)
+# plot(rf2)
+
+#-----------------------------------------------------------------
+rf <-randomForest(x=t(myotubedf), 
+                  y=as.factor(names),
+                  ntree=1000) 
+# a trivial test 
+predict(rf, t(myotubedf)) 
+# graph of sorted importance values 
+plot(sort(rf$importance, decreasing=TRUE))    
+# can also use: 
+varImpPlot(rf) 
+#extract the most 'important' genes 
+probe.names_2<-rownames(rf$importance) 
+# top_150 <-probe.names_2[order(rf$importance, decreasing=TRUE)[1:150]] 
+# write.csv(top110, file = "probes-top200.txt", quote=FALSE, row.names= FALSE, col.names=FALSE)
+plot(rf)
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, linear discriminant analysis LDA (SKIPPABLE)}
+
+dat <- cbind(as.data.frame(t(myotubedf)), factor(c(rep(0,13), rep(1,13))))
+colnames(dat)[ncol(dat)] <- "AFFECTED"
+
+# # crude substetting
+# n.controls <- 13
+# n.effected <- 13
+# 
+# train <- sample(1:(n.controls),(n.controls-5))
+# test <- setdiff(1:(n.effected), train)
+# 
+# test <- c(test, test+20)
+# train <- c(train, train+20)
+# 
+# 
+# mod <- lda(AFFECTED ~. , data=as.data.frame(d  at), prior = c(0.5,0.5), subset = train)
+# 
+# plot(mod)
+# 
+# mod.values <- predict(mod, as.data.frame(dat[train,]))
+# 
+# plot(mod.values$x[,1], ylab = c("LDA Axis"))
+# text(mod.values$x[,1], col = c(as.character.numeric(data[train,])+10))
+# 
+# preds <- predict(mod, as.data.frame(data[test,]))
+# preds$class
+# 
+# table(as.numeric(preds$class),
+#       as.numeric(dat[test, "AFFECTED"]) )
+# 
+# roc_lda <- plot.roc(as.numeric(preds$class),
+# 
+# as.numeric(dat[test, "AFFECTED"]) )
+
+## WHIT CARET (make the splitting in test and train more clean and precise)
+
+# 10 cross validation
+metric <- "Accuracy"
+# control <- trainControl(method="cv", number=10)
+# 
+# fit.lda <- train(AFFECTED~., data=dat, method="lda", metric=metric, trControl=control)
+# fit.rf <- train(AFFECTED~., data=dat, method="rf", metric=metric, trControl=control)
+# 
+# results <- resamples(list(LDA=fit.lda, RF=fit.rf))
+# summary(results)
+# ggplot(results) + labs(y = "Accuracy")
+
+# Run algorithms using 10-fold cross validation, 10 times (done later so not needed here)
+# control <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+# fit.lda.2 <- train(AFFECTED~., data=dat, method="lda", metric=metric, trControl=control)
+# fit.rf.2 <- train(AFFECTED~., data=dat, method="rf", metric=metric, trControl=control)
+# 
+# results <- resamples(list(LDA=fit.lda.2, RF=fit.rf.2))
+# ggplot(results) + labs(y = "Accuracy")
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, linear regression ridge and lasso (SKIPPABLE)}
+dat <- t(myotubedf)
+y <- c(rep(0,13),rep(1,13))
+f <- factor(y, labels = c("T2D", 
+"NGT"))
+
+# IMPORTANT: the type of factor changes the 
+# way the function glmnet works:
+# - f with numerical values: regression mode
+# - f with categorical values: classification mode
+
+lasso_fit=glmnet(dat,y,standardize=FALSE,family="binomial", alpha = 1) # alpha = 1 --> lasso regression
+plot(lasso_fit, xvar = "lambda", label=TRUE)
+
+ridge_fit=glmnet(dat,y,standardize=FALSE,family="binomial", alpha = 0) # alpha = 0 --> ridge regression
+plot(ridge_fit, xvar = "lambda", label=TRUE)
+
+
+cfit=cv.glmnet(dat,y,standardize=FALSE,family="binomial")
+plot(cfit)
+coef(cfit, s=cfit$lambda.min)
+
+# # repeat analysis but by using train + test sample subsets (not working, why = ?)
+# n.controls<-13
+# n.affected<-13
+# 
+# train <- sample(1:(n.controls), (n.controls - 5))
+# test <- setdiff(1:(n.controls),train)
+# 
+# test<- c(test, (test[1:5]+ 20))
+# train <- c(train, (train[1:8]+ 20))
+# 
+# fit=glmnet(dat,y,standardize=FALSE,family="binomial")
+# plot(fit)
+# 
+# cfit=cv.glmnet(dat[train,],y[train],standardize=FALSE,family="binomial")
+# plot(cfit)
+# 
+# predict(fit,dat[test,], type="class", s= cfit$lambda.min)
+# # plot ROCR curve and compute Area Under the Curve (AUC)
+# pred2 <- predict(fit,dat[test,], type="response", s=cfit$lambda.min)
+# plot(performance(prediction(pred2, y[test]), 'tpr', 'fpr'))
+# auc.tmp <- performance(prediction(pred2, y[test]),"auc")
+# auc <- as-numeric(auc.tmp$y.values)
+
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, lasso with caret}
+set.seed(1)
+
+f <- factor(c(rep("T2D",13), rep("NGT",13)))
+
+dat <- cbind(as.data.frame(t(myotubedf)),f)
+colnames(dat)[ncol(dat)] <- "AFFECTED"
+
+control <- trainControl(method="cv", number=10)
+metric <- "Accuracy"
+fit.lasso <- train(AFFECTED~., data=dat, method="glmnet", 
+                   family = "binomial",
+                   tuneGrid = expand.grid(alpha = 1, lambda = seq(0,1,by=0.05)),
+                   trControl = control,
+                   metric = metric)
+
+fit.ridge <- train(AFFECTED~., data=dat, method="glmnet", 
+                   family = "binomial",
+                   tuneGrid = expand.grid(alpha = 0, lambda = seq(0,1,by=0.05)),
+                   trControl = control,
+                   metric = metric)
+plot(fit.lasso) 
+# comparison with other classification methods
+fit.lda <- train(AFFECTED~., data=dat, method="lda",
+                 metric=metric, trControl=control)
+fit.rf <- train(AFFECTED~., data=dat, method="rf",
+                metric=metric, trControl=control)
+
+results <- resamples(list(RF=fit.rf, LDA=fit.lda, Lasso=fit.lasso, Ridge=fit.ridge))
+summary(results)
+
+mean_LDA <- mean(results$values$`LDA~Accuracy`)
+mean_Lasso <- mean(results$values$`LASSO~Accuracy`)
+mean_Rf <- mean(results$values$`RF~Accuracy`)
+mean_Ridge <- mean(results$values$`RIDGE~Accuracy`)
+means1 <- c(mean_Lasso, mean_LDA, mean_Rf, mean_Ridge)
+means <- scales::percent(means1)
+ggplot(results) + labs(y = "Accuracy of the methods") + geom_text(y= means1, aes(label = means), hjust = 0.5, vjust = -0.5, color = "black", fontface = "bold")
+
+# now wit repeated cross validation
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+
+fit.lda.2 <- train(AFFECTED~., data=dat, method="lda",
+                   metric=metric, trControl=control)
+
+fit.rf.2 <- train(AFFECTED~., data=dat, method="rf", metric=metric,
+                  trControl=control)
+
+fit.lasso.2 <- train(AFFECTED~., data=dat, method="glmnet", 
+                   family = "binomial",
+                   tuneGrid = expand.grid(alpha = 1, lambda = seq(0,1,by=0.05)),
+                   trControl = control,
+                   metric = metric)
+
+fit.ridge.2 <- train(AFFECTED~., data=dat, method="glmnet", 
+                   family = "binomial",
+                   tuneGrid = expand.grid(alpha = 0, lambda = seq(0,1,by=0.05)),
+                   trControl = control,
+                   metric = metric)
+
+results <- resamples(list(LDA=fit.lda.2, RF=fit.rf.2, LASSO=fit.lasso.2, RIDGE = fit.ridge.2))
+
+mean_LDA <- mean(results$values$`LDA~Accuracy`)
+mean_Lasso <- mean(results$values$`LASSO~Accuracy`)
+mean_Rf <- mean(results$values$`RF~Accuracy`)
+mean_Ridge <- mean(results$values$`RIDGE~Accuracy`)
+means1 <- c(mean_Lasso, mean_LDA, mean_Rf, mean_Ridge)
+means <- scales::percent(means1)
+ggplot(results) + labs(y = "Accuracy of the methods") + geom_text(y= means1, aes(label = means), hjust = 0.5, vjust = -0.5, color = "black", fontface = "bold")
+```
+
+```{r fig.width = 10, fig.height = 6, fig.align= "center", echo=FALSE, Scudo and Scudo + caret}
+set.seed(1)
+
+dat <- as.matrix(myotubedf)
+y <- c(rep(0,13),rep(1,13))
+f <- factor(y, labels = c("T2D", 
+"NGT"))
+
+
+inTrain <- createDataPartition(f, list = FALSE)
+trainData <- dat[, inTrain]
+testData <- dat[, -inTrain]
+
+# analyze training set
+trainRes <- scudoTrain(trainData, groups = f[inTrain], nTop = 25, nBottom = 25, alpha = 0.05)
+# trainRes
+# # inspect signatures
+# upSignatures(trainRes)[1:5,1:5]
+# consensusUpSignatures(trainRes)[1:5, ]
+# # generate and plot map of training samples
+trainNet <- scudoNetwork(trainRes, N = 0.5)
+scudoPlot(trainNet, vertex.label = NA)
+# # perform validation using testing samples
+# testRes <- scudoTest(trainRes, testData, f[-inTrain],nTop = 25, nBottom = 25)
+# testNet <- scudoNetwork(testRes, N = 0.5)
+# scudoPlot(testNet, vertex.label = NA)
+# # identify clusters on map
+# testClust <- igraph::cluster_spinglass(testNet, spins = 2)
+# plot(testClust, testNet, vertex.label = NA)
+# # perform classification 
+# classRes <- scudoClassify(trainData, testData, N = 0.25, nTop = 12, nBottom = 12,trainGroups = f[inTrain], alpha = 0.5)
+# caret::confusionMatrix(classRes$predicted, f[-inTrain])
+
+# use caret to test a grid a values for nTop & nBottom
+# using cross validation
+model <- scudoModel(nTop = (2:6)*5, nBottom = (2:6)*5,N = 0.5)
+control <- caret::trainControl(method = "repeatedcv", number = 10, repeats = 10, summaryFunction = caret::multiClassSummary)
+
+fit.scudo.2 <- caret::train(x = t(trainData), y = f[inTrain], method = model, trControl = control)
+# plot map of testing samples using best nTop & nBottom
+# values
+testRes <- scudoTest(trainRes, testData, f[-inTrain],fit.scudo.2$bestTune$nTop, fit.scudo.2$bestTune$nBottom5)
+testNet <- scudoNetwork(testRes, N = 0.5)
+scudoPlot(testNet, vertex.label = NA)
+# perform classification of testing samples using best 
+# nTop & nBottom values
+classRes <- scudoClassify(dat[, inTrain], dat[, -inTrain], 0.5, fit.scudo.2$bestTune$nTop, fit.scudo.2$bestTune$nBottom, f[inTrain], alpha = 0.05)
+caret::confusionMatrix(classRes$predicted, f[-inTrain])
+
+
+# open a connection to the running Cytoscape application (it must be running) to visualize the net
+# scudoCytoscape(trainNet) 
+# scudoCytoscape(testNet)
+
+# #transform fit.scudo.2 in a large train element
+# scudo_list <- list(fit.scudo.2)
+# 
+# # comparison of the 4 methods
+# scudo_results <- resamples(fit.scudo.2)
+# results <- combine(results, scudo_results)
+# ggplot(results) + labs(y = "Accuracy")
+```
+
+```{r important values and names for all the methods}
+# include in this list the first 200 genes that are considered important for the random forest classification
+
+# rf important genes for classification
+rf_importance <- varImp(fit.rf.2, scale=FALSE)
+t <- order(rf_importance$importance$Overall, decreasing = TRUE)
+rf_importance_list = c()
+for (i in 1:200){
+  rf_importance_list <- append(rf_importance_list, 
+                                  strsplit(rownames(rf_importance$importance)[t[i]], "`")[[1]][2])
+}
+
+# lda important genes for classification
+lda_importance <- varImp(fit.lda.2, scale=FALSE)
+t <- order(lda_importance$importance$T2D, decreasing = TRUE)
+lda_importance_list <- rownames(lda_importance$importance[t[1:200], ])
+
+# lasso important genes for classification
+lasso_importance <- varImp(fit.lasso.2, scale=FALSE)
+t <- order(lasso_importance$importance$Overall, decreasing = TRUE)
+# these motherfuckers using different notations i hate it
+lasso_importance_list <- c()
+for (i in 1:200){
+  lasso_importance_list <- append(lasso_importance_list, 
+                                  strsplit(rownames(lasso_importance$importance)[t[i]], "`")[[1]][2])
+}
+
+
+# ridge important genes for classification
+ridge_importance <- varImp(fit.ridge.2, scale=FALSE)
+t <- order(ridge_importance$importance$Overall, decreasing = TRUE)
+# these motherfuckers using different notations i hate it
+ridge_importance_list <- c()
+for (i in 1:200){
+  ridge_importance_list <- append(ridge_importance_list, 
+                                  strsplit(rownames(ridge_importance$importance)[t[i]], "`")[[1]][2])
+}
+
+```
+
+```{r obtaining specific gene names and p values for the following step}
+final_df <- t(data.frame(subset(t(myotubedf), select = ridge_importance_list)))
+res <- rowttests(as.matrix(final_df))
+
+for (x in 1:200){
+  rownames(final_df)[x]<-sub(".", "", rownames(final_df)[x])
+}
+
+genes_nums <- c(as.integer(rownames(final_df)))
+all_genes_names <- c(to_switch$Gene_names)
+
+
+genes_names.2 <- all_genes_names[genes_nums]
+p_values <- c(res$p.value)
+
+my_data <- data.frame(genes_names.2, p_values)
+filtered_data <- my_data[my_data$genes_names != "", ] #3 rows removed
+```
+
+```{r, include the functional annotattion chart (from online tools DAVID or using the code below = gprofiler)}
+# see vignette at https://cran.r-project.org/web/packages/gprofiler2/vignettes/gprofiler2.html
+gostres <- gost(query = genes_names.2,
+                organism = "hsapiens", ordered_query = FALSE, 
+                multi_query = FALSE, significant = TRUE, exclude_iea = FALSE,
+                measure_underrepresentation = FALSE, evcodes = FALSE, 
+                user_threshold = 0.05, correction_method = "g_SCS", 
+                domain_scope = "annotated", custom_bg = NULL, 
+                numeric_ns = "", sources = NULL, as_short_link = FALSE)
+
+names(gostres)
+head(gostres$result)
+
+# visualize results using a Manhattan plot
+gostplot(gostres, capped = TRUE, interactive = TRUE)
+
+# when ready, create publication quality (static) plot + table of interesting terms/pathways
+p <- gostplot(gostres, capped = TRUE, interactive = FALSE)
+publish_gostplot(p, highlight_terms = c("GO:0005515", "GO:0005737", "GO:0005654", "GO:0002181", "REAC:R-HSA-9711097", "TF:M00803"), 
+                 width = NA, height = NA, filename = NULL) #TF = E2F is a group of genes that encodes a family of transcription factors (TF) (transcriptional target --> cell cycle, nucleotide synthesis, DNA replication)
+```
+
+```{r, pathfinder}
+# run_pathfindR
+pathfindR_results <- run_pathfindR(filtered_data, 
+                                   iterations = 5)
+pathfindR_cluster <- cluster_enriched_terms(pathfindR_results)
+term_gene_graph(pathfindR_results)
+
+up_myotube <- pathfindR_cluster$Up_regulated
+down_myotube <- pathfindR_cluster$Down_regulated
+
+
+# write(unique(up_myotube), "up_tube.txt")
+```
+
+```{r datailed visualization}
+#visualize_terms(pathfindR_results, hsa_KEGG = F)
+```
+
+# common and different genes in the two cell tipe
+```{r}
+in_lit <- c("LXN", "CIB2", "PEA15", "KANK2", "FGD1", "NMRK1", "PLCB1", "SEMA4G", "ADARB1", "UPF3A", "CSTB", "COL3A1", "CD99", "ETV3", "FJX1", "UPF3A", "CSTB")
+
+intersect(up_myoblast, up_myotube)
+
+common_names <- intersect(genes_names.1, genes_names.2)
+
+# Extract names unique to each vector
+unique_to_vector1 <- setdiff(genes_names.1, genes_names.2)
+unique_to_vector2 <- setdiff(genes_names.2, genes_names.1)
+```
+
